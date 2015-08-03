@@ -1,8 +1,6 @@
 package aws
 
 import (
-	"bosun.org/_third_party/github.com/awslabs/aws-sdk-go/aws/awserr"
-	"bosun.org/_third_party/github.com/awslabs/aws-sdk-go/internal/apierr"
 	"bytes"
 	"fmt"
 	"io"
@@ -12,6 +10,9 @@ import (
 	"regexp"
 	"strconv"
 	"time"
+
+	//"github.com/aws/aws-sdk-go/aws/awserr"
+	"bosun.org/_third_party/github.com/awslabs/aws-sdk-go/aws/awserr"
 )
 
 var sleepDelay = func(delay time.Duration) {
@@ -79,8 +80,18 @@ func SendHandler(r *Request) {
 				return
 			}
 		}
+		if r.HTTPRequest == nil {
+			// Add a dummy request response object to ensure the HTTPResponse
+			// value is consistent.
+			r.HTTPResponse = &http.Response{
+				StatusCode: int(0),
+				Status:     http.StatusText(int(0)),
+				Body:       ioutil.NopCloser(bytes.NewReader([]byte{})),
+			}
+		}
 		// Catch all other request errors.
-		r.Error = apierr.New("RequestError", "send request failed", err)
+		r.Error = awserr.New("RequestError", "send request failed", err)
+		r.Retryable.Set(true) // network errors are retryable
 	}
 }
 
@@ -88,7 +99,7 @@ func SendHandler(r *Request) {
 func ValidateResponseHandler(r *Request) {
 	if r.HTTPResponse.StatusCode == 0 || r.HTTPResponse.StatusCode >= 300 {
 		// this may be replaced by an UnmarshalError handler
-		r.Error = apierr.New("UnknownError", "unknown error", nil)
+		r.Error = awserr.New("UnknownError", "unknown error", nil)
 	}
 }
 
@@ -109,10 +120,10 @@ func AfterRetryHandler(r *Request) {
 		// need to be expired locally so that the next request to
 		// get credentials will trigger a credentials refresh.
 		if r.Error != nil {
-			if err, ok := r.Error.(awserr.Error); ok && err.Code() == "ExpiredTokenException" {
-				r.Config.Credentials.Expire()
-				// The credentials will need to be resigned with new credentials
-				r.signed = false
+			if err, ok := r.Error.(awserr.Error); ok {
+				if isCodeExpiredCreds(err.Code()) {
+					r.Config.Credentials.Expire()
+				}
 			}
 		}
 
@@ -124,11 +135,15 @@ func AfterRetryHandler(r *Request) {
 var (
 	// ErrMissingRegion is an error that is returned if region configuration is
 	// not found.
-	ErrMissingRegion error = apierr.New("MissingRegion", "could not find region configuration", nil)
+	//
+	// @readonly
+	ErrMissingRegion error = awserr.New("MissingRegion", "could not find region configuration", nil)
 
 	// ErrMissingEndpoint is an error that is returned if an endpoint cannot be
 	// resolved for a service.
-	ErrMissingEndpoint error = apierr.New("MissingEndpoint", "'Endpoint' configuration is required for this service", nil)
+	//
+	// @readonly
+	ErrMissingEndpoint error = awserr.New("MissingEndpoint", "'Endpoint' configuration is required for this service", nil)
 )
 
 // ValidateEndpointHandler is a request handler to validate a request had the

@@ -8,6 +8,8 @@ import (
 	"regexp"
 	"time"
 
+	//"github.com/aws/aws-sdk-go/aws/awserr"
+	//"github.com/aws/aws-sdk-go/internal/endpoints"
 	"bosun.org/_third_party/github.com/awslabs/aws-sdk-go/aws/awserr"
 	"bosun.org/_third_party/github.com/awslabs/aws-sdk-go/internal/endpoints"
 )
@@ -17,7 +19,6 @@ import (
 type Service struct {
 	Config            *Config
 	Handlers          Handlers
-	ManualSend        bool
 	ServiceName       string
 	APIVersion        string
 	Endpoint          string
@@ -133,12 +134,37 @@ func retryRules(r *Request) time.Duration {
 	return delay * time.Millisecond
 }
 
-// Collection of service response codes which are generically
-// retryable for all services.
+// retryableCodes is a collection of service response codes which are retry-able
+// without any further action.
 var retryableCodes = map[string]struct{}{
-	"ExpiredTokenException":                  struct{}{},
-	"ProvisionedThroughputExceededException": struct{}{},
-	"Throttling":                             struct{}{},
+	"RequestError":                           {},
+	"ProvisionedThroughputExceededException": {},
+	"Throttling":                             {},
+	"ThrottlingException":                    {},
+	"RequestLimitExceeded":                   {},
+	"RequestThrottled":                       {},
+}
+
+// credsExpiredCodes is a collection of error codes which signify the credentials
+// need to be refreshed. Expired tokens require refreshing of credentials, and
+// resigning before the request can be retried.
+var credsExpiredCodes = map[string]struct{}{
+	"ExpiredToken":          {},
+	"ExpiredTokenException": {},
+	"RequestExpired":        {}, // EC2 Only
+}
+
+func isCodeRetryable(code string) bool {
+	if _, ok := retryableCodes[code]; ok {
+		return true
+	}
+
+	return isCodeExpiredCreds(code)
+}
+
+func isCodeExpiredCreds(code string) bool {
+	_, ok := credsExpiredCodes[code]
+	return ok
 }
 
 // shouldRetry returns if the request should be retried.
@@ -148,9 +174,7 @@ func shouldRetry(r *Request) bool {
 	}
 	if r.Error != nil {
 		if err, ok := r.Error.(awserr.Error); ok {
-			if _, ok := retryableCodes[err.Code()]; ok {
-				return true
-			}
+			return isCodeRetryable(err.Code())
 		}
 	}
 	return false
