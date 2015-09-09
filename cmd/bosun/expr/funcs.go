@@ -247,6 +247,20 @@ var builtins = map[string]parse.Func{
 		F:      Ungroup,
 	},
 
+	// Series Functions
+	"sSum": {
+		Args:   []parse.FuncType{parse.TypeSeriesSet, parse.TypeSeriesSet},
+		Return: parse.TypeSeriesSet,
+		Tags:   tagFirst,
+		F:      SSum,
+	},
+	"sDiv": {
+		Args:   []parse.FuncType{parse.TypeSeriesSet, parse.TypeSeriesSet},
+		Return: parse.TypeSeriesSet,
+		Tags:   tagFirst,
+		F:      SDiv,
+	},
+
 	// Other functions
 
 	"abs": {
@@ -916,6 +930,45 @@ func fromScalar(f float64) *Results {
 			},
 		},
 	}
+}
+
+func SSum(e *State, T miniprofiler.Timer, lResult *Results, rResult *Results) (r *Results, err error) {
+	return sOp(e, T, lResult, rResult, func(lV, rV float64) (float64, error) { return lV + rV, nil })
+}
+
+func SDiv(e *State, T miniprofiler.Timer, lResult *Results, rResult *Results) (r *Results, err error) {
+	f := func(lV, rV float64) (float64, error) {
+		if rV == 0 {
+			return math.NaN(), nil
+		}
+		return lV / rV, nil
+	}
+	return sOp(e, T, lResult, rResult, f)
+}
+
+func sOp(e *State, T miniprofiler.Timer, lResult *Results, rResult *Results, f func(lV, rV float64) (float64, error)) (r *Results, err error) {
+	r = new(Results)
+	for _, lRes := range lResult.Results {
+		for _, rRes := range rResult.Results {
+			if lRes.Group.Subset(rRes.Group) {
+				newSeries := make(Series)
+				lSeries := lRes.Value.(Series)
+				rSeries := rRes.Value.(Series)
+				for leftK, leftV := range lSeries {
+					if rightV, ok := rSeries[leftK]; ok {
+						newSeries[leftK], _ = f(leftV, rightV)
+						continue
+					}
+				}
+				r.Results = append(r.Results, &Result{
+					Group: lRes.Group,
+					Value: newSeries,
+				})
+				continue
+			}
+		}
+	}
+	return r, nil
 }
 
 func match(f func(res *Results, series *Result, floats []float64) error, series *Results, numberSets ...*Results) (*Results, error) {
