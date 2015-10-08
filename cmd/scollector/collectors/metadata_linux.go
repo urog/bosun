@@ -2,6 +2,7 @@ package collectors
 
 import (
 	"errors"
+	"fmt"
 	"io/ioutil"
 	"net"
 	"strconv"
@@ -107,12 +108,12 @@ func c_meta_linux_ifaces() (opentsdb.MultiDataPoint, error) {
 			v, _ := strconv.Atoi(strings.TrimSpace(string(speed)))
 			if v > 0 {
 				const MbitToBit = 1e6
-				metadata.AddMeta("", tags, "speed", v*MbitToBit, true)
+				metadata.AddMeta("", tags, "speed", fmt.Sprintf("%.0f", v*MbitToBit), true)
 			}
 		}
 		_ = util.ReadCommand(func(line string) error {
 			if v := metaLinuxIfacesMaster(line); v != "" {
-				metadata.AddMeta("", tags, "master", v, true)
+				metadata.AddMeta("", tags, "master", fmt.Sprintf("%.0f", v), true)
 				return doneErr
 			}
 			return nil

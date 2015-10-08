@@ -53,7 +53,7 @@ func c_meta_windows_version() (opentsdb.MultiDataPoint, error) {
 	for _, v := range dstComputer {
 		metadata.AddMeta("", nil, "manufacturer", v.Manufacturer, true)
 		metadata.AddMeta("", nil, "model", v.Model, true)
-		metadata.AddMeta("", nil, "memoryTotal", v.TotalPhysicalMemory, true)
+		metadata.AddMeta("", nil, "memoryTotal", fmt.Sprintf("%.0f", v.TotalPhysicalMemory), true)
 	}
 
 	for _, v := range dstBIOS {
@@ -139,10 +139,10 @@ func c_meta_windows_ifaces() (opentsdb.MultiDataPoint, error) {
 		metadata.AddMeta("", tag, "name", v.NetConnectionID, true)
 		metadata.AddMeta("", tag, "mac", strings.Replace(v.MACAddress, ":", "", -1), true)
 		if v.Speed != nil && *v.Speed != 0 {
-			metadata.AddMeta("", tag, "speed", v.Speed, true)
+			metadata.AddMeta("", tag, "speed", fmt.Sprintf("%.0f", v.Speed), true)
 		} else {
 			nicSpeed := mNicTeamIDtoSpeed[v.GUID]
-			metadata.AddMeta("", tag, "speed", nicSpeed, true)
+			metadata.AddMeta("", tag, "speed", fmt.Sprintf("%.0f", nicSpeed), true)
 		}
 
 		nicMaster := mNicTeamIDtoMaster[v.GUID]
