@@ -7,6 +7,7 @@ import (
 	"net"
 	"reflect"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -1022,57 +1023,57 @@ func (s *Schedule) Host(filter string) (map[string]*HostData, error) {
 				}
 				iface = host.Interfaces[name]
 			}
-			switch val := m.Value.(type) {
-			case string:
-				switch m.Name {
-				case "addr":
-					if iface != nil {
-						iface.IPAddresses = append(iface.IPAddresses, val)
-					}
-				case "description", "alias":
-					if iface != nil {
-						iface.Description = val
-					}
-				case "mac":
-					if iface != nil {
-						iface.MAC = val
-					}
-				case "manufacturer":
-					host.Manufacturer = val
-				case "master":
-					if iface != nil {
-						iface.Master = val
-					}
-				case "memory":
-					if name := m.Tags["name"]; name != "" {
-						host.Memory.Modules[name] = val
-					}
-				case "model":
-					host.Model = val
-				case "name":
-					if iface != nil {
-						iface.Name = val
-					}
-				case "processor":
-					if name := m.Tags["name"]; name != "" {
-						host.CPU.Processors[name] = val
-					}
-				case "serialNumber":
-					host.SerialNumber = val
-				case "version":
-					host.OS.Version = val
-				case "versionCaption", "uname":
-					host.OS.Caption = val
+			val := m.Value
+			switch m.Name {
+			case "addr":
+				if iface != nil {
+					iface.IPAddresses = append(iface.IPAddresses, val)
 				}
-			case float64:
-				switch m.Name {
-				case "memoryTotal":
-					host.Memory.Total = int64(val)
-				case "speed":
-					if iface != nil {
-						iface.LinkSpeed = int64(val)
+			case "description", "alias":
+				if iface != nil {
+					iface.Description = val
+				}
+			case "mac":
+				if iface != nil {
+					iface.MAC = val
+				}
+			case "manufacturer":
+				host.Manufacturer = val
+			case "master":
+				if iface != nil {
+					iface.Master = val
+				}
+			case "memory":
+				if name := m.Tags["name"]; name != "" {
+					host.Memory.Modules[name] = val
+				}
+			case "model":
+				host.Model = val
+			case "name":
+				if iface != nil {
+					iface.Name = val
+				}
+			case "processor":
+				if name := m.Tags["name"]; name != "" {
+					host.CPU.Processors[name] = val
+				}
+			case "serialNumber":
+				host.SerialNumber = val
+			case "version":
+				host.OS.Version = val
+			case "versionCaption", "uname":
+				host.OS.Caption = val
+			case "memoryTotal":
+				if i, err := strconv.ParseInt(val, 10, 64); err != nil {
+					host.Memory.Total = i
+				}
+			case "speed":
+				if iface != nil {
+					if i, err := strconv.ParseInt(val, 10, 64); err != nil {
+						iface.LinkSpeed = i
 					}
 				}
+
 			}
 		}
 	}
