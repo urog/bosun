@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"bosun.org/_third_party/github.com/MiniProfiler/go/miniprofiler"
+	"bosun.org/_third_party/github.com/influxdb/influxdb/client"
 	"bosun.org/_third_party/github.com/olivere/elastic"
 	"bosun.org/cmd/bosun/cache"
 	"bosun.org/cmd/bosun/expr/parse"
@@ -39,6 +40,9 @@ type State struct {
 	// LogstashElastic
 	logstashQueries []elastic.SearchSource
 	logstashHosts   LogstashElasticHosts
+
+	// InfluxDB
+	InfluxConfig client.Config
 
 	History AlertStatusProvider
 }
@@ -73,7 +77,7 @@ func New(expr string, funcs ...map[string]parse.Func) (*Expr, error) {
 
 // Execute applies a parse expression to the specified OpenTSDB context, and
 // returns one result per group. T may be nil to ignore timings.
-func (e *Expr) Execute(c opentsdb.Context, g graphite.Context, l LogstashElasticHosts, cache *cache.Cache, T miniprofiler.Timer, now time.Time, autods int, unjoinedOk bool, search *search.Search, squelched func(tags opentsdb.TagSet) bool, history AlertStatusProvider) (r *Results, queries []opentsdb.Request, err error) {
+func (e *Expr) Execute(c opentsdb.Context, g graphite.Context, l LogstashElasticHosts, influxConfig client.Config, cache *cache.Cache, T miniprofiler.Timer, now time.Time, autods int, unjoinedOk bool, search *search.Search, squelched func(tags opentsdb.TagSet) bool, history AlertStatusProvider) (r *Results, queries []opentsdb.Request, err error) {
 	if squelched == nil {
 		squelched = func(tags opentsdb.TagSet) bool {
 			return false
@@ -85,6 +89,7 @@ func (e *Expr) Execute(c opentsdb.Context, g graphite.Context, l LogstashElastic
 		tsdbContext:     c,
 		graphiteContext: g,
 		logstashHosts:   l,
+		InfluxConfig:    influxConfig,
 		now:             now,
 		autods:          autods,
 		unjoinedOk:      unjoinedOk,

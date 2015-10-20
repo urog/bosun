@@ -43,11 +43,12 @@ type Conf struct {
 	ProcessDotNet []ProcessDotNet
 	HTTPUnit      []HTTPUnit
 	Riak          []Riak
-
+	Github        []Github
 	// ElasticIndexFilters takes regular expressions and excludes indicies that
 	// match those filters from being monitored for metrics in the elastic.indices
 	// namespace
 	ElasticIndexFilters []string
+	RabbitMQ            []RabbitMQ
 }
 
 type HAProxy struct {
@@ -97,6 +98,7 @@ type MIBMetric struct {
 	Description string
 	FallbackOid string // Oid to try if main one doesn't work. Used in cisco where different models use different oids
 	Tags        string // static tags to populate for this metric. "direction=in"
+	Scale       float64
 }
 
 type MIBTag struct {
@@ -121,4 +123,13 @@ type HTTPUnit struct {
 
 type Riak struct {
 	URL string
+}
+
+type RabbitMQ struct {
+	URL string
+}
+
+type Github struct {
+	Repo  string
+	Token string
 }

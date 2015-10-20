@@ -6,8 +6,10 @@ import (
 	"net/http"
 	"net/mail"
 	"net/url"
+	"regexp"
 	"sort"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
@@ -26,8 +28,41 @@ import (
 // and then 5m from now you query -10min to -5m you'll get the same cached data, including the incomplete last points
 var cacheObj = cache.New(100)
 
-func Expr(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	e, err := expr.New(r.FormValue("q"), schedule.Conf.Funcs())
+func Expr(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (v interface{}, err error) {
+	defer func() {
+		if pan := recover(); pan != nil {
+			v = nil
+			err = fmt.Errorf("%v", pan)
+		}
+	}()
+	text, err := ioutil.ReadAll(r.Body)
+	if err != nil {
+		return nil, err
+	}
+
+	lines := strings.Split(strings.TrimSpace(string(text)), "\n")
+	var expression string
+	vars := map[string]string{}
+	varRegex := regexp.MustCompile(`(\$\w+)\s*=(.*)`)
+	for i, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		// last line is expression we care about
+		if i == len(lines)-1 {
+			expression = schedule.Conf.Expand(line, vars, false)
+		} else { // must be a variable declatation
+			matches := varRegex.FindStringSubmatch(line)
+			if len(matches) == 0 {
+				return nil, fmt.Errorf("Expext all lines before final expression to be variable declarations of form `$foo = something`")
+			}
+			name := strings.TrimSpace(matches[1])
+			value := strings.TrimSpace(matches[2])
+			vars[name] = schedule.Conf.Expand(value, vars, false)
+		}
+	}
+	e, err := expr.New(expression, schedule.Conf.Funcs())
 	if err != nil {
 		return nil, err
 	}
@@ -39,7 +74,8 @@ func Expr(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interfa
 	tsdbContext := schedule.Conf.TSDBContext()
 	graphiteContext := schedule.Conf.GraphiteContext()
 	ls := schedule.Conf.LogstashElasticHosts
-	res, queries, err := e.Execute(tsdbContext, graphiteContext, ls, cacheObj, t, now, 0, false, schedule.Search, nil, nil)
+	influx := schedule.Conf.InfluxConfig
+	res, queries, err := e.Execute(tsdbContext, graphiteContext, ls, influx, cacheObj, t, now, 0, false, schedule.Search, nil, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -85,10 +121,10 @@ type Res struct {
 
 func procRule(t miniprofiler.Timer, c *conf.Conf, a *conf.Alert, now time.Time, summary bool, email string, template_group string) (*ruleResult, error) {
 	s := &sched.Schedule{}
+	s.DataAccess = schedule.DataAccess
 	if err := s.Init(c); err != nil {
 		return nil, err
 	}
-	s.Metadata = schedule.Metadata
 	s.Search = schedule.Search
 	rh := s.NewRunHistory(now, cacheObj)
 	if _, err := s.CheckExpr(t, rh, a, a.Warn, sched.StWarning, nil); err != nil {
@@ -98,7 +134,7 @@ func procRule(t miniprofiler.Timer, c *conf.Conf, a *conf.Alert, now time.Time, 
 		return nil, err
 	}
 	keys := make(expr.AlertKeys, len(rh.Events))
-	errors, criticals, warnings, normals := make([]expr.AlertKey, 0), make([]expr.AlertKey, 0), make([]expr.AlertKey, 0), make([]expr.AlertKey, 0)
+	criticals, warnings, normals := make([]expr.AlertKey, 0), make([]expr.AlertKey, 0), make([]expr.AlertKey, 0)
 	i := 0
 	for k, v := range rh.Events {
 		v.Time = now
@@ -111,8 +147,6 @@ func procRule(t miniprofiler.Timer, c *conf.Conf, a *conf.Alert, now time.Time, 
 			warnings = append(warnings, k)
 		case sched.StCritical:
 			criticals = append(criticals, k)
-		case sched.StError:
-			errors = append(errors, k)
 		default:
 			return nil, fmt.Errorf("unknown state type %v", v.Status)
 		}
@@ -143,9 +177,7 @@ func procRule(t miniprofiler.Timer, c *conf.Conf, a *conf.Alert, now time.Time, 
 				warning = append(warning, fmt.Sprintf("template group %s was not a subset of any result", template_group))
 			}
 		}
-		if e := instance.History[0]; e.Error != nil {
-			instance.Result = e.Error
-		} else if e.Crit != nil {
+		if e := instance.History[0]; e.Crit != nil {
 			instance.Result = e.Crit
 		} else if e.Warn != nil {
 			instance.Result = e.Warn
@@ -203,7 +235,6 @@ func procRule(t miniprofiler.Timer, c *conf.Conf, a *conf.Alert, now time.Time, 
 		data = s.Data(rh, instance, a, false)
 	}
 	return &ruleResult{
-		errors,
 		criticals,
 		warnings,
 		normals,
@@ -217,7 +248,6 @@ func procRule(t miniprofiler.Timer, c *conf.Conf, a *conf.Alert, now time.Time, 
 }
 
 type ruleResult struct {
-	Errors    []expr.AlertKey
 	Criticals []expr.AlertKey
 	Warnings  []expr.AlertKey
 	Normals   []expr.AlertKey
@@ -303,9 +333,9 @@ func Rule(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interfa
 		Result *sched.Event
 	}
 	type Set struct {
-		Error, Critical, Warning, Normal int
-		Time                             string
-		Results                          []*Result `json:",omitempty"`
+		Critical, Warning, Normal int
+		Time                      string
+		Results                   []*Result `json:",omitempty"`
 	}
 	type History struct {
 		Time, EndTime time.Time
@@ -339,7 +369,6 @@ func Rule(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interfa
 			continue
 		}
 		set := Set{
-			Error:    len(res.Errors),
 			Critical: len(res.Criticals),
 			Warning:  len(res.Warnings),
 			Normal:   len(res.Normals),

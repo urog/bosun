@@ -13,6 +13,12 @@ import (
 const (
 	ifAlias              = ".1.3.6.1.2.1.31.1.1.1.18"
 	ifDescr              = ".1.3.6.1.2.1.2.2.1.2"
+	ifType               = ".1.3.6.1.2.1.2.2.1.3"
+	ifMTU                = ".1.3.6.1.2.1.2.2.1.4"
+	ifPhysAddress        = ".1.3.6.1.2.1.2.2.1.6"
+	ifHighSpeed          = ".1.3.6.1.2.1.31.1.1.1.15"
+	ifAdminStatus        = ".1.3.6.1.2.1.2.2.1.7"
+	ifOperStatus         = ".1.3.6.1.2.1.2.2.1.8"
 	ifHCInBroadcastPkts  = ".1.3.6.1.2.1.31.1.1.1.9"
 	ifHCInMulticastPkts  = ".1.3.6.1.2.1.31.1.1.1.8"
 	ifHCInUcastPkts      = ".1.3.6.1.2.1.31.1.1.1.7"
@@ -28,7 +34,6 @@ const (
 	ifOutDiscards        = ".1.3.6.1.2.1.2.2.1.19"
 	ifOutErrors          = ".1.3.6.1.2.1.2.2.1.20"
 	ifOutPauseFrames     = ".1.3.6.1.2.1.10.7.10.1.4"
-	ifType               = "1.3.6.1.2.1.2.2.1.3"
 )
 
 // SNMPIfaces registers a SNMP Interfaces collector for the given community and host.
@@ -79,9 +84,14 @@ func c_snmp_ifaces(community, host string) (opentsdb.MultiDataPoint, error) {
 	if err != nil {
 		return nil, err
 	}
+	ifPhysAddressRaw, err := snmp_subtree(host, community, ifPhysAddress)
+	if err != nil {
+		return nil, err
+	}
 	ifNames := make(map[interface{}]string, len(ifNamesRaw))
 	ifAliases := make(map[interface{}]string, len(ifAliasesRaw))
 	ifTypes := make(map[interface{}]int64, len(ifTypesRaw))
+	ifPhysAddresses := make(map[interface{}]string, len(ifPhysAddressRaw))
 	for k, v := range ifNamesRaw {
 		ifNames[k] = fmt.Sprintf("%s", v)
 	}
@@ -100,50 +110,60 @@ func c_snmp_ifaces(community, host string) (opentsdb.MultiDataPoint, error) {
 			ifAliases[k] = "NA"
 		}
 	}
+	for k, v := range ifPhysAddressRaw {
+		ifPhysAddresses[k] = fmt.Sprintf("%X", v)
+	}
 	var md opentsdb.MultiDataPoint
-	add := func(oid, metric, dir string) error {
-		m, err := snmp_subtree(host, community, oid)
+	add := func(sA snmpAdd) error {
+		m, err := snmp_subtree(host, community, sA.oid)
 		if err != nil {
 			return err
 		}
 		var sum int64
 		for k, v := range m {
 			tags := opentsdb.TagSet{
-				"host":      host,
-				"direction": dir,
-				"iface":     fmt.Sprintf("%d", k),
-				"iname":     ifNames[k],
+				"host":  host,
+				"iface": fmt.Sprintf("%s", k),
+				"iname": ifNames[k],
+			}
+			if sA.dir != "" {
+				tags["direction"] = sA.dir
 			}
 			if iVal, ok := v.(int64); ok && ifTypes[k] == 6 {
 				sum += iVal
 			}
-			Add(&md, switchInterfaceMetric(metric, ifNames[k], ifTypes[k]), v, tags, metadata.Unknown, metadata.None, "")
+			Add(&md, switchInterfaceMetric(sA.metric, ifNames[k], ifTypes[k]), v, tags, sA.rate, sA.unit, sA.desc)
 			metadata.AddMeta("", tags, "alias", ifAliases[k], false)
+			metadata.AddMeta("", tags, "mac", ifPhysAddresses[k], false)
 		}
-		if metric == osNetBytes {
-			tags := opentsdb.TagSet{"host": host, "direction": dir}
-			Add(&md, osNetBytes+".total", sum, tags, metadata.Counter, metadata.Bytes, "")
+		if sA.metric == osNetBytes {
+			tags := opentsdb.TagSet{"host": host, "direction": sA.dir}
+			Add(&md, osNetBytes+".total", sum, tags, metadata.Counter, metadata.Bytes, "The total number of bytes transfered through the network device.")
 		}
 		return nil
 	}
 	oids := []snmpAdd{
-		{ifHCInBroadcastPkts, osNetBroadcast, "in"},
-		{ifHCInMulticastPkts, osNetMulticast, "in"},
-		{ifHCInUcastPkts, osNetUnicast, "in"},
-		{ifHCOutBroadcastPkts, osNetBroadcast, "out"},
-		{ifHCOutMulticastPkts, osNetMulticast, "out"},
-		{ifHCOutOctets, osNetBytes, "out"},
-		{ifHCOutUcastPkts, osNetUnicast, "out"},
-		{ifHCinOctets, osNetBytes, "in"},
-		{ifInDiscards, osNetDropped, "in"},
-		{ifInErrors, osNetErrors, "in"},
-		{ifOutDiscards, osNetDropped, "out"},
-		{ifOutErrors, osNetErrors, "out"},
-		{ifInPauseFrames, osNetPauseFrames, "in"},
-		{ifOutPauseFrames, osNetPauseFrames, "out"},
+		{ifHCInBroadcastPkts, osNetBroadcast, "in", metadata.Counter, metadata.Packet, osNetBroadcastDesc},
+		{ifHCInMulticastPkts, osNetMulticast, "in", metadata.Counter, metadata.Packet, osNetMulticastDesc},
+		{ifHCInUcastPkts, osNetUnicast, "in", metadata.Counter, metadata.Packet, osNetUnicastDesc},
+		{ifHCOutBroadcastPkts, osNetBroadcast, "out", metadata.Counter, metadata.Packet, osNetBroadcastDesc},
+		{ifHCOutMulticastPkts, osNetMulticast, "out", metadata.Counter, metadata.Packet, osNetMulticastDesc},
+		{ifHCOutOctets, osNetBytes, "out", metadata.Counter, metadata.Bytes, osNetBytesDesc},
+		{ifHCOutUcastPkts, osNetUnicast, "out", metadata.Counter, metadata.Packet, osNetUnicastDesc},
+		{ifHCinOctets, osNetBytes, "in", metadata.Counter, metadata.Bytes, osNetBytesDesc},
+		{ifInDiscards, osNetDropped, "in", metadata.Counter, metadata.Packet, osNetDroppedDesc},
+		{ifInErrors, osNetErrors, "in", metadata.Counter, metadata.Error, osNetErrorsDesc},
+		{ifOutDiscards, osNetDropped, "out", metadata.Counter, metadata.Packet, osNetDroppedDesc},
+		{ifOutErrors, osNetErrors, "out", metadata.Counter, metadata.Error, osNetErrorsDesc},
+		{ifInPauseFrames, osNetPauseFrames, "in", metadata.Counter, metadata.Frame, osNetPauseFrameDesc},
+		{ifOutPauseFrames, osNetPauseFrames, "out", metadata.Counter, metadata.Frame, osNetPauseFrameDesc},
+		{ifMTU, osNetMTU, "", metadata.Gauge, metadata.Bytes, osNetMTUDesc},
+		{ifHighSpeed, osNetIfSpeed, "", metadata.Gauge, metadata.Megabit, osNetIfSpeedDesc},
+		{ifAdminStatus, osNetAdminStatus, "", metadata.Gauge, metadata.StatusCode, osNetAdminStatusDesc},
+		{ifOperStatus, osNetOperStatus, "", metadata.Gauge, metadata.StatusCode, osNetOperStatusDesc},
 	}
-	for _, o := range oids {
-		if err := add(o.oid, o.metric, o.dir); err != nil {
+	for _, sA := range oids {
+		if err := add(sA); err != nil {
 			return nil, err
 		}
 	}
@@ -154,4 +174,7 @@ type snmpAdd struct {
 	oid    string
 	metric string
 	dir    string
+	rate   metadata.RateType
+	unit   metadata.Unit
+	desc   string
 }

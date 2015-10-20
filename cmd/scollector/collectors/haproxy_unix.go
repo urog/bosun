@@ -7,17 +7,25 @@ import (
 	"strconv"
 	"strings"
 
+	"bosun.org/cmd/scollector/conf"
 	"bosun.org/metadata"
 	"bosun.org/opentsdb"
 )
 
-// HAProxy registers an HAProxy collector.
-func HAProxy(user, password, tier, url string) {
-	collectors = append(collectors, &IntervalCollector{
-		F: func() (opentsdb.MultiDataPoint, error) {
-			return haproxyFetch(user, password, tier, url)
-		},
-		name: fmt.Sprintf("haproxy-%s-%s", tier, url),
+func init() {
+	registerInit(func(c *conf.Conf) {
+		for _, h := range c.HAProxy {
+			for _, i := range h.Instances {
+				ii := i
+				collectors = append(collectors, &IntervalCollector{
+					F: func() (opentsdb.MultiDataPoint, error) {
+
+						return haproxyFetch(h.User, h.Password, ii.Tier, ii.URL)
+					},
+					name: fmt.Sprintf("haproxy-%s-%s", ii.Tier, ii.URL),
+				})
+			}
+		}
 	})
 }
 

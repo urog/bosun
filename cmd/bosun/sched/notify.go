@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"fmt"
 	htemplate "html/template"
-	"log"
 	"strings"
 	ttemplate "text/template"
 	"time"
@@ -14,23 +13,27 @@ import (
 	"bosun.org/slog"
 )
 
-// Poll dispatches notification checks when needed.
-func (s *Schedule) Poll() {
+func (s *Schedule) dispatchNotifications() {
+	ticker := time.NewTicker(s.Conf.CheckFrequency * 2)
+	timeout := s.CheckNotifications()
 	for {
-		timeout := s.CheckNotifications()
-		// Wait for one of these two.
 		select {
 		case <-time.After(timeout):
+			timeout = s.CheckNotifications()
 		case <-s.nc:
+			timeout = s.CheckNotifications()
+		case <-ticker.C:
+			s.sendUnknownNotifications()
 		}
 	}
+
 }
 
 func (s *Schedule) Notify(st *State, n *conf.Notification) {
-	if s.notifications == nil {
-		s.notifications = make(map[*conf.Notification][]*State)
+	if s.pendingNotifications == nil {
+		s.pendingNotifications = make(map[*conf.Notification][]*State)
 	}
-	s.notifications[n] = append(s.notifications[n], st)
+	s.pendingNotifications[n] = append(s.pendingNotifications[n], st)
 }
 
 // CheckNotifications processes past notification events. It returns the
@@ -43,7 +46,7 @@ func (s *Schedule) CheckNotifications() time.Duration {
 	s.Notifications = nil
 	for ak, ns := range notifications {
 		if _, present := silenced[ak]; present {
-			log.Println("silencing", ak)
+			slog.Infoln("silencing", ak)
 			continue
 		}
 		for name, t := range ns {
@@ -70,7 +73,7 @@ func (s *Schedule) CheckNotifications() time.Duration {
 		}
 	}
 	s.sendNotifications(silenced)
-	s.notifications = nil
+	s.pendingNotifications = nil
 	timeout := time.Hour
 	now := time.Now()
 	for _, ns := range s.Notifications {
@@ -90,28 +93,38 @@ func (s *Schedule) CheckNotifications() time.Duration {
 
 func (s *Schedule) sendNotifications(silenced map[expr.AlertKey]Silence) {
 	if s.Conf.Quiet {
-		log.Println("quiet mode prevented", len(s.notifications), "notifications")
+		slog.Infoln("quiet mode prevented", len(s.pendingNotifications), "notifications")
 		return
 	}
-	for n, states := range s.notifications {
-		ustates := make(States)
+	for n, states := range s.pendingNotifications {
 		for _, st := range states {
 			ak := st.AlertKey()
 			_, silenced := silenced[ak]
 			if st.Last().Status == StUnknown {
 				if silenced {
-					log.Println("silencing unknown", ak)
+					slog.Infoln("silencing unknown", ak)
 					continue
 				}
-				ustates[ak] = st
+				s.pendingUnknowns[n] = append(s.pendingUnknowns[n], st)
 			} else if silenced {
-				log.Println("silencing", ak)
+				slog.Infoln("silencing", ak)
 			} else {
 				s.notify(st, n)
 			}
 			if n.Next != nil {
 				s.AddNotification(ak, n.Next, time.Now().UTC())
 			}
+		}
+	}
+}
+
+func (s *Schedule) sendUnknownNotifications() {
+	slog.Info("Batching and sending unknown notifications")
+	defer slog.Info("Done sending unknown notifications")
+	for n, states := range s.pendingUnknowns {
+		ustates := make(States)
+		for _, st := range states {
+			ustates[st.AlertKey()] = st
 		}
 		var c int
 		tHit := false
@@ -135,6 +148,7 @@ func (s *Schedule) sendNotifications(silenced map[expr.AlertKey]Silence) {
 			s.utnotify(oTSets, n)
 		}
 	}
+	s.pendingUnknowns = make(map[*conf.Notification][]*State)
 }
 
 var unknownMultiGroup = ttemplate.Must(ttemplate.New("unknownMultiGroup").Parse(`
@@ -176,7 +190,7 @@ func (s *Schedule) utnotify(groups map[string]expr.AlertKeys, n *conf.Notificati
 		groups,
 		s.Conf.UnknownThreshold,
 	}); err != nil {
-		log.Println(err)
+		slog.Errorln(err)
 	}
 	n.Notify(subject, body.String(), []byte(subject), body.Bytes(), s.Conf, "unknown_treshold")
 }
@@ -205,12 +219,12 @@ func (s *Schedule) unotify(name string, group expr.AlertKeys, n *conf.Notificati
 	data := s.unknownData(now, name, group)
 	if t.Body != nil {
 		if err := t.Body.Execute(body, &data); err != nil {
-			log.Println("unknown template error:", err)
+			slog.Infoln("unknown template error:", err)
 		}
 	}
 	if t.Subject != nil {
 		if err := t.Subject.Execute(subject, &data); err != nil {
-			log.Println("unknown template error:", err)
+			slog.Infoln("unknown template error:", err)
 		}
 	}
 	n.Notify(subject.String(), body.String(), subject.Bytes(), body.Bytes(), s.Conf, name)

@@ -43,9 +43,11 @@ const (
 	Bytes               = "bytes"
 	BytesPerSecond      = "bytes per second"
 	C                   = "C" // Celsius
+	Channel             = "channels"
 	Check               = "checks"
 	CHz                 = "CentiHertz"
 	Connection          = "connections"
+	Consumer            = "consumers"
 	Context             = "contexts"
 	ContextSwitch       = "context switches"
 	Count               = ""
@@ -54,9 +56,12 @@ const (
 	Error               = "errors"
 	Event               = ""
 	Eviction            = "evictions"
+	Exchange            = "exchanges"
 	Fault               = "faults"
 	Flush               = "flushes"
 	Files               = "files"
+	Frame               = "frames"
+	Fraction            = "fraction"
 	Get                 = "gets"
 	GetExists           = "get exists"
 	Interupt            = "interupts"
@@ -68,15 +73,19 @@ const (
 	MHz                 = "MHz" // MegaHertz
 	Megabit             = "Mbit"
 	Merge               = "merges"
+	Message             = "messages"
 	MilliSecond         = "milliseconds"
+	Node                = "nodes"
 	Ok                  = "ok" // "OK" or not status, 0 = ok, 1 = not ok
 	Operation           = "Operations"
+	Packet              = "packets"
 	Page                = "pages"
 	Pct                 = "percent" // Range of 0-100.
 	PerSecond           = "per second"
 	Process             = "processes"
 	Priority            = "priority"
 	Query               = "queries"
+	Queue               = "queues"
 	Redispatch          = "redispatches"
 	Refresh             = "refreshes"
 	Replica             = "replicas"
@@ -181,7 +190,7 @@ func Init(u *url.URL, debug bool) error {
 func collectMetadata() {
 	// Wait a bit so hopefully our collectors have run once and populated the
 	// metadata.
-	time.Sleep(time.Second * 5)
+	time.Sleep(time.Minute)
 	for {
 		for _, f := range metafuncs {
 			f()

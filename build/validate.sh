@@ -10,6 +10,23 @@ if [ "$TRAVIS" != '' ]; then
 	setStatus -o $O -r $R -s pending -c bosun -d="Running validation build in travis" -sha=$SHA
 fi
 
+
+echo -e "\nBuilding/..."
+
+GOBUILDRESULT=0
+GBUILDRESULT=0
+for GOOS in darwin windows linux ; do
+	export GOOS=$GOOS
+	go build bosun.org/...
+	GBUILDRESULT=$?
+	if [ "$GBUILDRESULT" != 0 ]; then
+		BUILDMSG="${BUILDMSG}Does not build on ${GOOS}. "
+		GOBUILDRESULT=$GBUILDRESULT
+	fi
+done
+
+
+
 echo -e "\nChecking gofmt -s -w for all folders that don't start with . or _"
 GOFMTRESULT=0
 GOFMTOUT=$(gofmt -l -s -w $DIRS);
@@ -17,7 +34,7 @@ if [ "$GOFMTOUT" != '' ]; then
     echo "The following files need 'gofmt -s -w':"
     echo "$GOFMTOUT"
     GOFMTRESULT=1
-	BUILDMSG="go fmt -s needed. "
+	BUILDMSG="${BUILDMSG}go fmt -s needed. "
 fi
 
 echo -e "\nRunning go vet bosun.org/..."
@@ -59,5 +76,5 @@ if [ "$TRAVIS" != '' ]; then
 	setStatus -o $O -r $R -s=$BUILDSTATUS -c bosun -d="$BUILDMSG" -sha=$SHA
 fi
 
-let "RESULT = $GOFMTRESULT | $GOVETRESULT | $GOTESTRESULT | $GOGENERATERESULT | $GOGENERATEDIFFRESULT"
+let "RESULT = $GOBUILDRESULT | $GOFMTRESULT | $GOVETRESULT | $GOTESTRESULT | $GOGENERATERESULT | $GOGENERATEDIFFRESULT"
 exit $RESULT

@@ -6,10 +6,10 @@ title: Expression Documentation
 <div class="row">
 <div class="col-sm-3" >
   <div class="sidebar" data-spy="affix" data-offset-top="0" data-offset-bottom="0" markdown="1">
- 
+
  * Some TOC
  {:toc}
- 
+
   </div>
 </div>
 
@@ -40,7 +40,7 @@ Various metrics can be combined by operators as long as one group is a subset of
 
 ## Operators
 
-The standard arithmetic (`+`, binary and unary `-`, `*`, `/`, `%`), relational (`<`, `>`, `==`, `!=`, `>=`, `<=`), and logical (`&&`, `||`, and unary `!`) operators are supported. The binary operators require the value on at least one side to be a scalar. Arrays will have the operator applied to each element. Examples:
+The standard arithmetic (`+`, binary and unary `-`, `*`, `/`, `%`), relational (`<`, `>`, `==`, `!=`, `>=`, `<=`), and logical (`&&`, `||`, and unary `!`) operators are supported. The binary operators require the value on at least one side to be a scalar or NumberSet. Arrays will have the operator applied to each element. Examples:
 
 * `q("q") + 1`, which adds one to every element of the result of the query `"q"`
 * `-q("q")`, the negation of the results of the query
@@ -79,7 +79,7 @@ alert haproxy_session_limit {
 
 We don't need to understand everything in this alert, but it is worth highlighting a few things to get oriented:
 
- * `haproxy_session_limit` This is the name of the alert, an alert instance is uniquely identified by its alertname and group, i.e `haproxy_session_limit{host=lb,pxname=http-in,tier=2}` 
+ * `haproxy_session_limit` This is the name of the alert, an alert instance is uniquely identified by its alertname and group, i.e `haproxy_session_limit{host=lb,pxname=http-in,tier=2}`
  * `$notes` This is a variable. Variables are not smart, they are just text replacement. If you are familiar with macros in C, this is a similar concept. These variables can be referenced in notification templates which is why we have a generic one for notes
  * `q("sum:haproxy.frontend.scur{host=*,pxname=*,tier=*}", "5m", "")` is an OpenTSDB query function, it returns *N* series, we know each series will have the host, pxname, and tier tag keys in their group based on the query.
  * `max(...)` is a reduction function. It takes each **series** and **reduces** it to a **number** (See the Data types section above).
@@ -114,6 +114,35 @@ This happens when the outer graphite function is something like "avg()" or "sum(
 ### GraphiteBand(query string, duration string, period string, format string, num string) seriesSet
 
 Like band() but for graphite queries.
+
+## InfluxDB Query Functions
+
+### influx(db string, query string, startDuration string, endDuration, groupByInterval string) seriesSet
+
+Queries InfluxDB.
+
+All tags returned by InfluxDB will be included in the results.
+
+* `db` is the database name in InfluxDB
+* `query` is an InfluxDB select statement
+    NB: WHERE clauses for `time` are inserted automatically, and it is thus an error to specify `time` conditions in query.
+* `startDuration` and `endDuration` set the time window from now - see the OpenTSDB q() function for more details
+    They will be merged into the existing WHERE clause in the `query`.
+* `groupByInterval` is the `time.Duration` window which will be passed as an argument to a GROUP BY time() clause if given. This groups values in the given time buckets. This groups (or in OpenTSDB lingo "downsamples") the results to this timeframe. [Full documentation on Group by](https://influxdb.com/docs/v0.9/query_language/data_exploration.html#group-by).
+
+### Notes:
+
+  * By default, queries will be given a suffix of `fill(none)` to filter out any nil rows.
+
+## examples:
+
+These influx and opentsdb queries should give roughly the same results:
+
+```
+influx("db", '''SELECT non_negative_derivative(mean(value)) FROM "os.cpu" GROUP BY host''', "30m", "", "2m")
+
+q("sum:2m-avg:rate{counter,,1}:os.cpu{host=*}", "30m", "")
+```
 
 ## Logstash Query Functions
 
@@ -192,6 +221,10 @@ All reduction functions take a seriesSet and return a numberSet with one element
 ## avg(seriesSet) numberSet
 
 Average (arithmetic mean).
+
+## cCount(seriesSet) numberSet
+
+Returns the change count which is the number of times in the series a value was not equal to the immediate previous value. Useful for checking if things that should be at a steady value are "flapping". For example, a series with values [0, 1, 0, 1] would return 3.
 
 ## dev(seriesSet) numberSet
 
@@ -301,7 +334,7 @@ Alert if more than 50% of servers in a group have ping timeouts
     # so we need to *reduce* each series values of each group into a single number:
     $max_timeout = max($timeout)
     # Max timeout is now a group of results where the value of each group is a number. Since each
-    # group is an alert instance, we need to regroup this into a sigle alert. We can do that by 
+    # group is an alert instance, we need to regroup this into a sigle alert. We can do that by
     # transposing with t()
     $max_timeout_series = t("$max_timeout", "")
     # $max_timeout_series is now a single group with a value of type series. We need to reduce
@@ -376,7 +409,7 @@ Returns all results in seriesSet that are a subset of numberSet and have a non-z
 
 Returns the first count (scalar) results of number.
 
-## lookup(table string, key string) numberSet 
+## lookup(table string, key string) numberSet
 
 Returns the first key from the given lookup table with matching tags.
 

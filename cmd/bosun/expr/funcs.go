@@ -15,6 +15,7 @@ import (
 	"bosun.org/cmd/bosun/expr/parse"
 	"bosun.org/graphite"
 	"bosun.org/opentsdb"
+	"bosun.org/slog"
 )
 
 func logstashTagQuery(args []parse.Node) (parse.Tags, error) {
@@ -140,6 +141,12 @@ var builtins = map[string]parse.Func{
 		Return: parse.TypeNumberSet,
 		Tags:   tagFirst,
 		F:      Avg,
+	},
+	"cCount": {
+		Args:   []parse.FuncType{parse.TypeSeriesSet},
+		Return: parse.TypeNumberSet,
+		Tags:   tagFirst,
+		F:      CCount,
 	},
 	"dev": {
 		Args:   []parse.FuncType{parse.TypeSeriesSet},
@@ -842,6 +849,8 @@ func timeGraphiteRequest(e *State, T miniprofiler.Timer, req *graphite.Request) 
 	return
 }
 
+const tsdbMaxTries = 3
+
 func timeTSDBRequest(e *State, T miniprofiler.Timer, req *opentsdb.Request) (s opentsdb.ResponseSet, err error) {
 	e.tsdbQueries = append(e.tsdbQueries, *req)
 	if e.autods > 0 {
@@ -854,14 +863,23 @@ func timeTSDBRequest(e *State, T miniprofiler.Timer, req *opentsdb.Request) (s o
 		}
 	}
 	b, _ := json.MarshalIndent(req, "", "  ")
-	T.StepCustomTiming("tsdb", "query", string(b), func() {
-		getFn := func() (interface{}, error) {
-			return e.tsdbContext.Query(req)
+	tries := 1
+	for {
+		T.StepCustomTiming("tsdb", "query", string(b), func() {
+			getFn := func() (interface{}, error) {
+				return e.tsdbContext.Query(req)
+			}
+			var val interface{}
+			val, err = e.cache.Get(string(b), getFn)
+			s = val.(opentsdb.ResponseSet).Copy()
+
+		})
+		if err == nil || tries == tsdbMaxTries {
+			break
 		}
-		var val interface{}
-		val, err = e.cache.Get(string(b), getFn)
-		s = val.(opentsdb.ResponseSet).Copy()
-	})
+		slog.Errorf("Error on tsdb query %d: %s", tries, err.Error())
+		tries++
+	}
 	return
 }
 
@@ -965,6 +983,26 @@ func avg(dps Series, args ...float64) (a float64) {
 	}
 	a /= float64(len(dps))
 	return
+}
+
+func CCount(e *State, T miniprofiler.Timer, series *Results) (*Results, error) {
+	return reduce(e, T, series, cCount)
+}
+
+func cCount(dps Series, args ...float64) (a float64) {
+	if len(dps) < 2 {
+		return float64(0)
+	}
+	series := NewSortedSeries(dps)
+	count := 0
+	last := series[0].V
+	for _, p := range series[1:] {
+		if p.V != last {
+			count++
+		}
+		last = p.V
+	}
+	return float64(count)
 }
 
 func Count(e *State, T miniprofiler.Timer, query, sduration, eduration string) (r *Results, err error) {

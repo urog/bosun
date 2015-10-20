@@ -11,6 +11,7 @@ import (
 	_ "net/http/pprof"
 	"net/url"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -84,9 +85,9 @@ func main() {
 	util.Set()
 	if conf.Hostname != "" {
 		util.Hostname = conf.Hostname
-		if err := collect.SetHostname(conf.Hostname); err != nil {
-			slog.Fatal(err)
-		}
+	}
+	if err := collect.SetHostname(util.Hostname); err != nil {
+		slog.Fatal(err)
 	}
 	if conf.ColDir != "" {
 		collectors.InitPrograms(conf.ColDir)
@@ -97,10 +98,9 @@ func main() {
 			err = e
 		}
 	}
-	for _, h := range conf.HAProxy {
-		for _, i := range h.Instances {
-			collectors.HAProxy(h.User, h.Password, i.Tier, i.URL)
-		}
+	collectors.Init(conf)
+	for _, rmq := range conf.RabbitMQ {
+		check(collectors.RabbitMQ(rmq.URL))
 	}
 	for _, cfg := range conf.SNMP {
 		check(collectors.SNMP(cfg, conf.MIBS))
@@ -159,6 +159,8 @@ func main() {
 	if *flagList {
 		list(c)
 		return
+	} else if *flagPrint {
+		u = &url.URL{Scheme: "http", Host: "localhost:0"}
 	} else if err != nil {
 		slog.Fatalf("invalid host %v: %v", conf.Host, err)
 	}
@@ -174,7 +176,7 @@ func main() {
 	if conf.BatchSize != 0 {
 		collect.BatchSize = conf.BatchSize
 	}
-	collect.Tags = opentsdb.TagSet{"os": runtime.GOOS}
+	collect.Tags = conf.Tags.Copy().Merge(opentsdb.TagSet{"os": runtime.GOOS})
 	if *flagPrint {
 		collect.Print = true
 	}
@@ -183,14 +185,13 @@ func main() {
 			slog.Fatal(err)
 		}
 	}
-	cdp := collectors.Run(c)
+	cdp, cquit := collectors.Run(c)
 	if u != nil {
 		slog.Infoln("OpenTSDB host:", u)
 	}
 	if err := collect.InitChan(u, "scollector", cdp); err != nil {
 		slog.Fatal(err)
 	}
-
 	if version.VersionDate != "" {
 		v, err := strconv.ParseInt(version.VersionDate, 10, 64)
 		if err == nil {
@@ -219,7 +220,15 @@ func main() {
 			}
 		}
 	}()
-	select {}
+	sChan := make(chan os.Signal)
+	signal.Notify(sChan, os.Interrupt)
+	<-sChan
+	close(cquit)
+	// try to flush all datapoints on sigterm, but quit after 5 seconds no matter what.
+	time.AfterFunc(5*time.Second, func() {
+		os.Exit(0)
+	})
+	collect.Flush()
 }
 
 func readConf() *conf.Conf {
@@ -473,13 +482,13 @@ func toToml(fname string) {
 
 	f, err := os.Create(fname)
 	if err != nil {
-		log.Fatal(err)
+		slog.Fatal(err)
 	}
 	if err := toml.NewEncoder(f).Encode(&c); err != nil {
-		log.Fatal(err)
+		slog.Fatal(err)
 	}
 	if _, err := extra.WriteTo(f); err != nil {
-		log.Fatal(err)
+		slog.Fatal(err)
 	}
 	f.Close()
 }

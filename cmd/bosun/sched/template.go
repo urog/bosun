@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"html/template"
 	"io/ioutil"
-	"log"
 	"math"
 	"net/http"
 	"net/url"
@@ -127,7 +126,7 @@ func (s *Schedule) ExecuteBody(rh *RunHistory, a *conf.Alert, st *State, isEmail
 	if inline, err := inliner.Inline(buf.String()); err == nil {
 		buf = bytes.NewBufferString(inline)
 	} else {
-		log.Println(err)
+		slog.Errorln(err)
 	}
 	return buf.Bytes(), c.Attachments, nil
 }
@@ -203,7 +202,7 @@ func (c *Context) evalExpr(e *expr.Expr, filter bool, series bool, autods int) (
 	if series && e.Root.Return() != parse.TypeSeriesSet {
 		return nil, "", fmt.Errorf("need a series, got %T (%v)", e, e)
 	}
-	res, _, err := e.Execute(c.runHistory.Context, c.runHistory.GraphiteContext, c.runHistory.Logstash, c.runHistory.Cache, nil, c.runHistory.Start, autods, c.Alert.UnjoinedOK, c.schedule.Search, c.schedule.Conf.AlertSquelched(c.Alert), c.runHistory)
+	res, _, err := e.Execute(c.runHistory.Context, c.runHistory.GraphiteContext, c.runHistory.Logstash, c.runHistory.InfluxConfig, c.runHistory.Cache, nil, c.runHistory.Start, autods, c.Alert.UnjoinedOK, c.schedule.Search, c.schedule.Conf.AlertSquelched(c.Alert), c.runHistory)
 	if err != nil {
 		return nil, "", fmt.Errorf("%s: %v", e, err)
 	}
@@ -366,7 +365,10 @@ func (c *Context) GetMeta(metric, name string, v interface{}) (interface{}, erro
 	case opentsdb.TagSet:
 		t = v
 	}
-	meta := c.schedule.GetMetadata(metric, t)
+	meta, err := c.schedule.GetMetadata(metric, t)
+	if err != nil {
+		return nil, err
+	}
 	if name == "" {
 		return meta, nil
 	}

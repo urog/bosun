@@ -8,7 +8,6 @@ import (
 	"html/template"
 	"io"
 	"io/ioutil"
-	"log"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,6 +23,8 @@ import (
 	"bosun.org/collect"
 	"bosun.org/metadata"
 	"bosun.org/opentsdb"
+	"bosun.org/slog"
+	"bosun.org/util"
 	"bosun.org/version"
 )
 
@@ -57,7 +58,7 @@ func init() {
 
 func Listen(listenAddr string, devMode bool, tsdbHost string) error {
 	if devMode {
-		log.Println("using local web assets")
+		slog.Infoln("using local web assets")
 	}
 	webFS := FS(devMode)
 
@@ -65,7 +66,7 @@ func Listen(listenAddr string, devMode bool, tsdbHost string) error {
 		str := FSMustString(devMode, "/templates/index.html")
 		templates, err := template.New("").Parse(str)
 		if err != nil {
-			log.Fatal(err)
+			slog.Fatal(err)
 		}
 		return templates
 	}
@@ -88,15 +89,18 @@ func Listen(listenAddr string, devMode bool, tsdbHost string) error {
 	router.Handle("/api/config", miniprofiler.NewHandler(Config))
 	router.Handle("/api/config_test", miniprofiler.NewHandler(ConfigTest))
 	router.Handle("/api/egraph/{bs}.svg", JSON(ExprGraph))
+	router.Handle("/api/errors", JSON(ErrorHistory))
 	router.Handle("/api/expr", JSON(Expr))
 	router.Handle("/api/graph", JSON(Graph))
 	router.Handle("/api/health", JSON(HealthCheck))
 	router.Handle("/api/host", JSON(Host))
+	router.Handle("/api/last", JSON(Last))
 	router.Handle("/api/incidents", JSON(Incidents))
 	router.Handle("/api/incidents/events", JSON(IncidentEvents))
 	router.Handle("/api/metadata/get", JSON(GetMetadata))
 	router.Handle("/api/metadata/metrics", JSON(MetadataMetrics))
 	router.Handle("/api/metadata/put", JSON(PutMetadata))
+	router.Handle("/api/metadata/delete", JSON(DeleteMetadata)).Methods("DELETE")
 	router.Handle("/api/metric", JSON(UniqueMetrics))
 	router.Handle("/api/metric/{tagk}/{tagv}", JSON(MetricsByTagPair))
 	router.Handle("/api/rule", JSON(Rule))
@@ -108,7 +112,7 @@ func Listen(listenAddr string, devMode bool, tsdbHost string) error {
 	router.Handle("/api/tagk/{metric}", JSON(TagKeysByMetric))
 	router.Handle("/api/tagv/{tagk}", JSON(TagValuesByTagKey))
 	router.Handle("/api/tagv/{tagk}/{metric}", JSON(TagValuesByMetricTagKey))
-	router.Handle("/api/run", JSON(Run))
+	router.Handle("/api/tagsets/{metric}", JSON(FilteredTagsetsByMetric))
 	router.HandleFunc("/api/version", Version)
 	router.Handle("/api/debug/schedlock", JSON(ScheduleLockStatus))
 	http.Handle("/", miniprofiler.NewHandler(Index))
@@ -117,8 +121,8 @@ func Listen(listenAddr string, devMode bool, tsdbHost string) error {
 	http.Handle("/partials/", fs)
 	http.Handle("/static/", http.StripPrefix("/static/", fs))
 	http.Handle("/favicon.ico", fs)
-	log.Println("bosun web listening on:", listenAddr)
-	log.Println("tsdb host:", tsdbHost)
+	slog.Infoln("bosun web listening on:", listenAddr)
+	slog.Infoln("tsdb host:", tsdbHost)
 	return http.ListenAndServe(listenAddr, nil)
 }
 
@@ -163,7 +167,7 @@ func (rp *relayProxy) ServeHTTP(responseWriter http.ResponseWriter, r *http.Requ
 }
 
 func Relay(dest string) http.Handler {
-	return &relayProxy{ReverseProxy: httputil.NewSingleHostReverseProxy(&url.URL{
+	return &relayProxy{ReverseProxy: util.NewSingleHostProxy(&url.URL{
 		Scheme: "http",
 		Host:   dest,
 	})}
@@ -195,7 +199,7 @@ func indexTSDB(r *http.Request, body []byte) {
 func IndexTSDB(w http.ResponseWriter, r *http.Request) {
 	body, err := ioutil.ReadAll(r.Body)
 	if err != nil {
-		log.Println(err)
+		slog.Error(err)
 	}
 	indexTSDB(r, body)
 }
@@ -237,7 +241,7 @@ func JSON(h func(miniprofiler.Timer, http.ResponseWriter, *http.Request) (interf
 		}
 		buf := new(bytes.Buffer)
 		if err := json.NewEncoder(buf).Encode(d); err != nil {
-			log.Println(err)
+			slog.Error(err)
 			serveError(w, err)
 			return
 		}
@@ -305,13 +309,34 @@ func PutMetadata(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (
 		return nil, err
 	}
 	for _, m := range ms {
-		schedule.PutMetadata(metadata.Metakey{
+		err := schedule.PutMetadata(metadata.Metakey{
 			Metric: m.Metric,
 			Tags:   m.Tags.Tags(),
 			Name:   m.Name,
 		}, m.Value)
+		if err != nil {
+			return nil, err
+		}
 	}
 	w.WriteHeader(204)
+	return nil, nil
+}
+
+func DeleteMetadata(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	d := json.NewDecoder(r.Body)
+	var ms []struct {
+		Tags opentsdb.TagSet
+		Name string
+	}
+	if err := d.Decode(&ms); err != nil {
+		return nil, err
+	}
+	for _, m := range ms {
+		err := schedule.DeleteMetadata(m.Tags, m.Name)
+		if err != nil {
+			return nil, err
+		}
+	}
 	return nil, nil
 }
 
@@ -325,12 +350,15 @@ func GetMetadata(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (
 		}
 		tags[k] = vals[i]
 	}
-	return schedule.GetMetadata(r.FormValue("metric"), tags), nil
+	return schedule.GetMetadata(r.FormValue("metric"), tags)
 }
 
 func MetadataMetrics(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
 	metric := r.FormValue("metric")
-	return schedule.MetadataMetrics(metric), nil
+	if metric == "" {
+		return nil, fmt.Errorf("metric required")
+	}
+	return schedule.MetadataMetrics(metric)
 }
 
 func Alerts(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
@@ -525,12 +553,8 @@ func SilenceSet(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (i
 }
 
 func SilenceClear(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	var data map[string]string
-	j := json.NewDecoder(r.Body)
-	if err := j.Decode(&data); err != nil {
-		return nil, err
-	}
-	return nil, schedule.ClearSilence(data["id"])
+	id := r.FormValue("id")
+	return nil, schedule.ClearSilence(id)
 }
 
 func ConfigTest(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) {
@@ -568,22 +592,23 @@ func APIRedirect(w http.ResponseWriter, req *http.Request) {
 	http.Redirect(w, req, "http://bosun.org/api.html", 302)
 }
 
-var checkRunning = make(chan bool, 1)
-
-func Run(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	select {
-	case checkRunning <- true:
-		// Good, we've got the lock.
-	default:
-		return 0, fmt.Errorf("check already running")
-	}
-	d, err := schedule.Check(t, time.Now(), 0)
-	<-checkRunning
-	return d, err
+func Host(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	return schedule.Host(r.FormValue("filter"))
 }
 
-func Host(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	return schedule.Host(r.FormValue("filter")), nil
+// Last returns the most recent datapoint for a metric+tagset. The metric+tagset
+// string should be formated like os.cpu{host=foo}. The tag porition expects the
+// that the keys will be in alphabetical order.
+func Last(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	var counter bool
+	if r.FormValue("counter") != "" {
+		counter = true
+	}
+	tags, err := opentsdb.ParseTags(r.FormValue("tagset"))
+	if err != nil {
+		return nil, err
+	}
+	return schedule.Search.GetLast(r.FormValue("metric"), tags, counter)
 }
 
 func Version(w http.ResponseWriter, r *http.Request) {
@@ -600,4 +625,22 @@ func ScheduleLockStatus(t miniprofiler.Timer, w http.ResponseWriter, r *http.Req
 		data.HeldFor = time.Now().Sub(since).String()
 	}
 	return data, nil
+}
+
+func ErrorHistory(t miniprofiler.Timer, w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	if r.Method == "GET" {
+		return schedule.GetErrorHistory(), nil
+	}
+	data := []struct {
+		Alert string    `json:"Alert"`
+		Start time.Time `json:"Start"`
+	}{}
+	decoder := json.NewDecoder(r.Body)
+	if err := decoder.Decode(&data); err != nil {
+		return nil, err
+	}
+	for _, key := range data {
+		schedule.ClearErrorLine(key.Alert, key.Start)
+	}
+	return nil, nil
 }
