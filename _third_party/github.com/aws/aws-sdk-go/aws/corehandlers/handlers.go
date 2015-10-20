@@ -12,7 +12,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
-	"time"
+	//"time"
 )
 
 // Interface for matching types which also have a Len method.
